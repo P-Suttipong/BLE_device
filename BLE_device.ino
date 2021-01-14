@@ -1,6 +1,8 @@
+#include <EEPROM.h>
+
 #include "BLEDevice.h"
 #include "Math.h"
-#include "EEPROM.h"
+#include <WiFi.h>
 #include "BluetoothSerial.h"
 
 #define RXD2 16
@@ -10,13 +12,13 @@
 #error Bluetooth is not enabled! Please run `make menuconfig` to and enable it
 #endif
 
-BluetoothSerial SerialBT;
+BluetoothSerial ESP32BT;
 
 static BLEAddress *pServerAddress;
 BLEScan* pBLEScan;
 BLEClient*  pClient;
 
-String beaconAddress[] = {"c6:2d:9d:ae:08:81", "fe:af:87:0f:32:db", "f3:a6:b7:6e:76:54", "e3:7d:9c:7e:f5:7d", "d4:dd:24:b1:16:4f"};
+String beaconAddress[12];
 String message = "";
 String msgToSend;
 int beaconLength = 0;
@@ -29,6 +31,8 @@ long endTime1 = 0.0;
 long endTime2 = 0.0;
 int i;
 int counter = 0;
+char BTmsg;
+int EEPROMaddress[12];
 
 class MyAdvertisedDeviceCallbacks: public BLEAdvertisedDeviceCallbacks {
     void onResult(BLEAdvertisedDevice Device) {
@@ -39,15 +43,10 @@ class MyAdvertisedDeviceCallbacks: public BLEAdvertisedDeviceCallbacks {
       }
       if (detected) {
         int rssi = Device.getRSSI();
-        if (rssi > -50) {
-          Status = "I";
-        } else if (rssi > -80 && rssi <= -50) {
-          Status = "N";
-        }
-        else if (rssi <= -80) {
-          Status = "F";
-        } else {
+        if (rssi < -95) {
           Status = "U";
+        } else {
+          Status = "N";
         }
         Device.getScan()->stop();
       } else {
@@ -71,26 +70,78 @@ void Working() {
   }
 }
 
+void saveMacAddress(String msg) {
+  Serial.println(msg);
+  String msgArr[3];
+  int t = 0, r = 0;
+  for (int c = 0; c < msg.length(); c++) {
+    if (msg.charAt(c) == ',' || msg.charAt(c) == '#') {
+      msgArr[t] = msg.substring(r, c);
+      r = c + 1;
+      t++;
+    }
+  }
+  Serial.print("BT Serial : ");
+  Serial.print(msgArr[0]);
+  Serial.print(" : ");
+  Serial.print(msgArr[1]);
+  Serial.print(" : ");
+  Serial.println(msgArr[2]);
+
+  if (msgArr[0] == "mac" || msgArr[0] == "MAC") {
+    int address = msgArr[1].toInt();
+    String mac = msgArr[2];
+    Serial.println("Save EEPROM");
+    EEPROM.writeString(EEPROMaddress[address - 1], mac);
+    EEPROM.commit();
+  }
+  getBeaconAddressFromEEPROM();
+}
+
+void getBeaconAddressFromEEPROM() {
+  beaconLength = 0;
+  for (int i = 0; i < 12; i++) {
+    String address = EEPROM.readString(EEPROMaddress[i]);
+    Serial.print("EEPROM : ");
+    Serial.println(address);
+    if (address.length() >= 10) {
+      beaconAddress[beaconLength] = address;
+      beaconLength++;
+    }
+  }
+}
+
 
 void setup() {
   // put your setup code here, to run once:
 
   Serial.begin(115200);
   Serial2.begin(9600, SERIAL_8N1, RXD2, TXD2);
-  SerialBT.begin("ESP32test");
-  beaconLength = sizeof(beaconAddress) / 12;
-  Serial.println(beaconLength);
+  String BTName = "ESP_" + WiFi.macAddress();
+  ESP32BT.begin(BTName);
+  EEPROM.begin(512);
   BLEDevice::init("");
   pClient  = BLEDevice::createClient();
   pBLEScan = BLEDevice::getScan();
   pBLEScan->setAdvertisedDeviceCallbacks(new MyAdvertisedDeviceCallbacks());
   pBLEScan->setActiveScan(true);
   Serial.println("Init BLE Done !");
+
+  Serial.println(WiFi.macAddress());
+
+  EEPROMaddress[0] = 0;
+  for (int count = 1; count < 12; count++) {
+    EEPROMaddress[count] = EEPROMaddress[count - 1] + 18;
+    Serial.println(EEPROMaddress[count]);
+  }
+
+  getBeaconAddressFromEEPROM();
 }
 
 void makeString() {
   message = "";
   i = 0;
+  Serial.println("");
   while (i < beaconLength) {
     Serial.print("i value : ");
     Serial.print(i);
@@ -116,8 +167,13 @@ void sendStrings() {
 }
 
 void loop() {
+  while (ESP32BT.available()) {
+    String msg = ESP32BT.readString();
+    saveMacAddress(msg);
+  }
   Working();
   delay(100);
+
   long nowtime1 = millis();
   if (nowtime1 - endTime1 > 60000) {
     endTime1 = nowtime1;
@@ -127,8 +183,5 @@ void loop() {
     makeString();
     msgToSend = message;
     memset(beaconStatus, 0, sizeof beaconStatus);
-  }
-  if (SerialBT.available()) {
-    Serial.write(SerialBT.read());
   }
 }
